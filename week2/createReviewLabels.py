@@ -4,6 +4,8 @@ from pathlib import Path
 
 def transform_training_data(title, comment):
     # IMPLEMENT
+    title = title.lower()
+    comment = comment.lower()
     return title + ' ' + comment
 
 
@@ -32,10 +34,16 @@ with open(output_file, 'w') as output:
             with open(os.path.join(directory, filename)) as xml_file:
                 for line in xml_file:
                     if '<rating>'in line:
-                        rating = line[12:15]
+                        rating = float(line[12:15])
+                        if rating >= 4.0:
+                            rating_label = "positive"
+                        elif rating >=2.5:
+                            rating_label = "neutral"
+                        else:
+                            rating_label = "negative"
                     elif '<title>' in line:
                         title = line[11:len(line) - 9]
                     elif '<comment>' in line:
                         comment = line[13:len(line) - 11]
                     elif '</review>'in line:
-                      output.write("__label__%s %s\n" % (rating, transform_training_data(title, comment)))
+                      output.write("__label__%s %s\n" % (rating_label, transform_training_data(title, comment)))
