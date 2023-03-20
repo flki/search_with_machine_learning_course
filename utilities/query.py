@@ -11,11 +11,16 @@ from urllib.parse import urljoin
 import pandas as pd
 import fileinput
 import logging
-
+from nltk.stem import *
+import nltk
+import fasttext
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logging.basicConfig(format='%(levelname)s:%(message)s')
+
+model = fasttext.load_model("/workspace/search_with_machine_learning_course/week3/model_queries.bin")
+stemmer = nltk.stem.PorterStemmer()
 
 # expects clicks and impressions to be in the row
 def create_prior_queries_from_group(
@@ -49,7 +54,18 @@ def create_prior_queries(doc_ids, doc_id_weights,
 
 
 # Hardcoded query here.  Better to use search templates or other query config.
-def create_query(user_query, click_prior_query, filters, sort="_score", sortDir="desc", size=10, source=None, isUseSynonyms=False):
+def create_query(user_query, click_prior_query, filters, sort="_score", sortDir="desc", size=10, source=None, isUseSynonyms=False, use_category_filter=False, use_category_boost=False, categories=[]):
+    if use_category_filter and categories:
+        cat_filter = {
+            "terms": {
+                "categoryPathIds.keyword": categories
+            }
+        }
+        if not filters:
+            filters = cat_filter
+        else:
+            filters.append(cat_filter)
+
     query_obj = {
         'size': size,
         "sort": [
@@ -189,6 +205,17 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
                                     }
                                 }
         }
+
+    if use_category_boost:
+        cat_boost = {
+            "terms": {
+                "categoryPathIds.keyword": categories,
+                "boost": 10.0
+            }
+        }
+        query_obj["query"]["function_score"]["query"]["bool"]["should"].append(cat_boost)
+    
+
     if user_query == "*" or user_query == "#":
         # replace the bool
         try:
@@ -202,12 +229,44 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
     print ("query_obj=" + str(query_obj))
     return query_obj
 
+def get_predicted_cat(query: str):
+    # use porter for stemming the query
+    stemmed_user_query = query.lower()
+    tokens = stemmed_user_query.split()
+    stemmed_tokens = [stemmer.stem(token) for token in tokens]
+    stemmed_user_query = ' '.join(stemmed_tokens)
 
-def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", isUseSynonyms=False):
+    k = 5
+    cats, probs = model.predict(stemmed_user_query, k)
+    print(cats)
+    print(probs)
+
+    cat_len = len(cats)
+    predicted_cats = []
+    category_threshold = 0.3
+    print("len="+str(cat_len))
+
+    #cut off by threshold
+    for i in range (0, cat_len):
+        #print("i="+ str(i) + ", label=" + cats[i] + ", prob=" + str(probs[i]))
+        if probs[i] > category_threshold:
+            cur = cats[i].replace("__label__", "")
+            predicted_cats.append(cur)
+            #print("adding cat="+ cur)
+
+    return predicted_cats
+    
+
+def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", isUseSynonyms=False, use_category_filter=False, use_category_boost=False):
     #### W3: classify the query
+    predicted_cats = []
+    if use_category_filter or use_category_boost:
+        predicted_cats = get_predicted_cat(user_query)
+        print("predicted_cats=")
+        print(predicted_cats)
+
     #### W3: create filters and boosts
-    # Note: you may also want to modify the `create_query` method above
-    query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir, source=["name", "shortDescription"], isUseSynonyms=isUseSynonyms)
+    query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir, source=["name", "shortDescription"], isUseSynonyms=isUseSynonyms, use_category_filter=use_category_filter, use_category_boost=use_category_boost, categories=predicted_cats)
     logging.info(query_obj)
     response = client.search(query_obj, index=index)
     if response and response['hits']['hits'] and len(response['hits']['hits']) > 0:
@@ -234,6 +293,10 @@ if __name__ == "__main__":
                          help='The OpenSearch admin.  If this is set, the program will prompt for password too. If not set, use default of admin/admin')
     general.add_argument('--synonyms', default=False, action="store_true",
                          help='If this is set, opnesearch will use the name.synonyms field')
+    general.add_argument('--use_category_filter', default=False, action="store_true",
+                         help='If this is set, the results will be filtered by predicted category over threshold')
+    general.add_argument('--use_category_boost', default=False, action="store_true",
+                         help='If this is set, the predicted category will be boosted')
 
     args = parser.parse_args()
 
@@ -244,6 +307,8 @@ if __name__ == "__main__":
     host = args.host
     port = args.port
     isUseSynonyms = args.synonyms
+    use_category_boost = args.use_category_boost
+    use_category_filter = args.use_category_filter
     #print("synonuyms flag =" + str(args.synonyms))
     if args.user:
         password = getpass()
@@ -270,7 +335,7 @@ if __name__ == "__main__":
         if query == "Exit":
             break
 
-        search(client=opensearch, user_query=query, index=index_name, isUseSynonyms=True)
+        search(client=opensearch, user_query=query, index=index_name, isUseSynonyms=isUseSynonyms, use_category_filter=use_category_filter, use_category_boost=use_category_boost)
 
         print(query_prompt)
 
