@@ -14,13 +14,18 @@ import logging
 from nltk.stem import *
 import nltk
 import fasttext
+from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logging.basicConfig(format='%(levelname)s:%(message)s')
 
-model = fasttext.load_model("/workspace/search_with_machine_learning_course/week3/model_queries.bin")
+fasttext_model = fasttext.load_model("/workspace/search_with_machine_learning_course/week3/model_queries.bin")
 stemmer = nltk.stem.PorterStemmer()
+
+knn_model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
+
+
 
 # expects clicks and impressions to be in the row
 def create_prior_queries_from_group(
@@ -229,6 +234,22 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
     print ("query_obj=" + str(query_obj))
     return query_obj
 
+# Week 4: add embedding search
+def create_vector_query(user_query, size):
+    embedding = knn_model.encode([user_query])
+    query_obj = {
+        'size': size,
+        "query": {
+            "knn": {
+            "embedding": {
+                "vector": embedding[0],
+                "k": size
+            }
+        }
+      }
+    }
+    return query_obj
+
 def get_predicted_cat(query: str):
     # use porter for stemming the query
     stemmed_user_query = query.lower()
@@ -237,7 +258,7 @@ def get_predicted_cat(query: str):
     stemmed_user_query = ' '.join(stemmed_tokens)
 
     k = 5
-    cats, probs = model.predict(stemmed_user_query, k)
+    cats, probs = fasttext_model.predict(stemmed_user_query, k)
     print(cats)
     print(probs)
 
@@ -257,7 +278,10 @@ def get_predicted_cat(query: str):
     return predicted_cats
     
 
-def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", isUseSynonyms=False, use_category_filter=False, use_category_boost=False):
+def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", 
+           isUseSynonyms=False, use_category_filter=False, use_category_boost=False, use_vector=False):
+
+    knn_size = 10
     #### W3: classify the query
     predicted_cats = []
     if use_category_filter or use_category_boost:
@@ -266,7 +290,11 @@ def search(client, user_query, index="bbuy_products", sort="_score", sortDir="de
         print(predicted_cats)
 
     #### W3: create filters and boosts
-    query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir, source=["name", "shortDescription"], isUseSynonyms=isUseSynonyms, use_category_filter=use_category_filter, use_category_boost=use_category_boost, categories=predicted_cats)
+    # week 4 call create_vector_query
+    if use_vector:
+        query_obj = create_vector_query(user_query, knn_size)
+    else:
+        query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir, source=["name", "shortDescription"], isUseSynonyms=isUseSynonyms, use_category_filter=use_category_filter, use_category_boost=use_category_boost, categories=predicted_cats)
     logging.info(query_obj)
     response = client.search(query_obj, index=index)
     if response and response['hits']['hits'] and len(response['hits']['hits']) > 0:
@@ -297,6 +325,8 @@ if __name__ == "__main__":
                          help='If this is set, the results will be filtered by predicted category over threshold')
     general.add_argument('--use_category_boost', default=False, action="store_true",
                          help='If this is set, the predicted category will be boosted')
+    general.add_argument('--vector', default=False, action="store_true",
+                         help='If this is set, it will do a vector search on the query to retrieve the k nearest neighbour')
 
     args = parser.parse_args()
 
@@ -309,6 +339,7 @@ if __name__ == "__main__":
     isUseSynonyms = args.synonyms
     use_category_boost = args.use_category_boost
     use_category_filter = args.use_category_filter
+    use_vector = args.vector
     #print("synonuyms flag =" + str(args.synonyms))
     if args.user:
         password = getpass()
@@ -335,7 +366,8 @@ if __name__ == "__main__":
         if query == "Exit":
             break
 
-        search(client=opensearch, user_query=query, index=index_name, isUseSynonyms=isUseSynonyms, use_category_filter=use_category_filter, use_category_boost=use_category_boost)
+        search(client=opensearch, user_query=query, index=index_name, isUseSynonyms=isUseSynonyms, 
+                use_category_filter=use_category_filter, use_category_boost=use_category_boost, use_vector=use_vector)
 
         print(query_prompt)
 
